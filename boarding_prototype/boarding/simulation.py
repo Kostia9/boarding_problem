@@ -1,110 +1,84 @@
-"""The simulation engine: a discrete-time system X(t+1) = F(X(t)), 1 step = 1 second."""
+"""Discrete-time boarding simulation, 1 step = 1 second."""
 
 from collections import deque
+from numbers import Integral
 
 import numpy as np
 
-from .model import Aircraft, Passenger, State
-from .strategies import BoardingStrategy
-from .timing import FixedTiming, TimingModel
+from .model import Aircraft, State
+
+
+def _seconds(value, minimum):
+    if isinstance(value, bool) or not isinstance(value, Integral) or value < minimum:
+        raise ValueError(f"Expected an integer duration of at least {minimum} seconds, got {value!r}")
+    return int(value)
 
 
 class Simulation:
-    """One boarding run.
+    """One boarding run. All randomness comes from `self.rng`, so a seed gives a reproducible run."""
 
-    Everything stochastic must draw from `self.rng` (seeded by `seed`), so a run is
-    always reproducible: same inputs + same seed -> same trajectory and same T.
-    The RNG is used first by the strategy (entry order), then by the timing model
-    in the fixed update order of `step`.
-    """
-
-    def __init__(self, strategy: BoardingStrategy, aircraft: Aircraft = Aircraft(),
-                 timing: TimingModel = FixedTiming(), seed: int = 0):
-        self.strategy = strategy
+    def __init__(self, strategy, aircraft=Aircraft(), seed=0, stow_time=5, seat_time=2):
         self.aircraft = aircraft
-        self.timing = timing
+        self.stow_time = _seconds(stow_time, 0)
+        self.seat_time = _seconds(seat_time, 0)
         self.rng = np.random.default_rng(seed)
-        self.passengers = aircraft.make_passengers()          # indexed by id
-        order = strategy.order(self.passengers, self.rng)
-        if sorted(passenger.id for passenger in order) != [passenger.id for passenger in self.passengers]:
-            raise ValueError(f"{strategy!r} must return every passenger exactly once")
-        self.entry_order: tuple[Passenger, ...] = tuple(order)
-        self.queue: deque[Passenger] = deque(order)            # still outside
-        # aisle[k] = passenger in cell k (1..n_rows). Index 0 (outside) stays None; the extra
-        # cell n_rows+1 is never occupied, so "is the next cell free" needs no bounds check.
-        self.aisle: list[Passenger | None] = [None] * (aircraft.n_rows + 2)
-        self.t = 0                                             # equals T once finished
+        self.passengers = aircraft.make_passengers()
+        self.entry_order = list(strategy(self.passengers.copy(), self.rng))
+        if sorted(map(id, self.entry_order)) != sorted(map(id, self.passengers)):
+            raise ValueError("Strategy must return each original passenger exactly once")
+        self.queue = deque(self.entry_order)             # passengers still outside
+        self.aisle = [None] * (aircraft.n_rows + 1)      # aisle[k] = passenger in cell k (0 unused)
+        self.t = 0
         self.n_seated = 0
 
-    # ---- queries -------------------------------------------------------------
     @property
-    def finished(self) -> bool:
+    def finished(self):
         return self.n_seated == len(self.passengers)
 
-    def count(self, state: State) -> int:
-        return sum(passenger.state is state for passenger in self.passengers)
+    def count(self, state):
+        return sum(p.state is state for p in self.passengers)
 
-    # ---- dynamics ------------------------------------------------------------
-    def step(self) -> "Simulation":
-        """Advance one second. Fixed update order (this is what makes F well defined):
+    def time_at_row(self, passenger):
+        """Seconds a passenger blocks the aisle at their row. Override for e.g. seat interference."""
+        return self.stow_time + self.seat_time
 
-        1. Aisle cells from the back (row n) to the front (row 1). A cell vacated
-           earlier in this step can be entered by the passenger directly behind it,
-           so an unobstructed line moves forward together.
-        2. Then, if aisle cell 1 is free, the next waiting passenger enters.
+    def step(self):
+        """Advance one second.
+
+        Aisle cells are updated from the back to the front, so a line of passengers
+        can move forward together. Then the next passenger enters if cell 1 is free.
         """
         if self.finished:
-            return self
+            return
         self.t += 1
         for cell in range(self.aircraft.n_rows, 0, -1):
-            passenger = self.aisle[cell]
-            if passenger is not None:
-                self._update_in_aisle(passenger, cell)
-        if self.queue and self.can_move(self.queue[0], 1):
-            self._move(self.queue.popleft(), 0, 1)
-        return self
+            p = self.aisle[cell]
+            if p is None:
+                continue
+            if p.state is State.STOWING:
+                p.remaining_time -= 1
+                if p.remaining_time == 0:
+                    p.state = State.SEATED
+                    self.aisle[cell] = None
+                    self.n_seated += 1
+            elif self.aisle[cell + 1] is None:
+                self._move(p, cell + 1)
+            else:
+                p.state = State.BLOCKED
+        if self.queue and self.aisle[1] is None:
+            self._move(self.queue.popleft(), 1)
 
-    def run(self, max_steps: int = 100_000) -> int:
-        """Run to completion and return the total boarding time T."""
+    def run(self):
+        """Run to the end and return the total boarding time T in seconds."""
         while not self.finished:
-            if self.t >= max_steps:
-                raise RuntimeError(f"Simulation did not finish within {max_steps} steps")
             self.step()
         return self.t
 
-    def can_move(self, passenger: Passenger, to_cell: int) -> bool:
-        """Movement constraint. Override to add rules (e.g. a cap on passengers in the aisle)."""
-        return self.aisle[to_cell] is None
-
-    # ---- internals -----------------------------------------------------------
-    def _update_in_aisle(self, passenger: Passenger, cell: int) -> None:
-        if passenger.state is State.STOWING:
-            self._continue_stowing(passenger, cell)
-        elif self.can_move(passenger, cell + 1):
-            self._move(passenger, cell, cell + 1)
-        else:
-            passenger.state = State.BLOCKED
-
-    def _continue_stowing(self, passenger: Passenger, cell: int) -> None:
-        passenger.remaining_time -= 1
-        if passenger.remaining_time == 0:
-            passenger.state = State.SEATED
-            self.n_seated += 1
-            self.aisle[cell] = None
-
-    def _move(self, passenger: Passenger, from_cell: int, to_cell: int) -> None:
-        self.aisle[from_cell] = None           # cell 0 (outside) is always None
-        self.aisle[to_cell] = passenger
-        passenger.current_position = to_cell
-        passenger.state = State.WALKING
-        if to_cell == passenger.target_row:
-            self._start_stowing(passenger)
-
-    def _start_stowing(self, passenger: Passenger) -> None:
-        stow = self.timing.stow_time(passenger, self)
-        seat = self.timing.seat_time(passenger, self)
-        if stow < 0 or seat < 0 or stow + seat < 1:
-            raise ValueError(f"{self.timing!r} gave stow={stow}, seat={seat}; "
-                             "need non-negative times with a total of at least 1 s")
-        passenger.state = State.STOWING
-        passenger.remaining_time = stow + seat
+    def _move(self, p, cell):
+        self.aisle[p.current_position] = None
+        self.aisle[cell] = p
+        p.current_position = cell
+        p.state = State.WALKING
+        if cell == p.target_row:
+            p.state = State.STOWING
+            p.remaining_time = _seconds(self.time_at_row(p), 1)

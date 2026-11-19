@@ -20,12 +20,12 @@ EMPTY_COLOR = "#e1e0d9"
 @st.cache_data
 def boarding_times(seed: int) -> dict[str, int]:
     """Total boarding time T of every strategy (deterministic for a given seed, so cached)."""
-    return {name: Simulation(cls(), AIRCRAFT, seed=seed).run()
-            for name, cls in STRATEGIES.items()}
+    return {name: Simulation(strategy, AIRCRAFT, seed=seed).run()
+            for name, strategy in STRATEGIES.items()}
 
 
 def reset():
-    strategy = STRATEGIES[st.session_state.strategy]()
+    strategy = STRATEGIES[st.session_state.strategy]
     st.session_state.sim = Simulation(strategy, AIRCRAFT, seed=int(st.session_state.seed))
     st.session_state.running = False
 
@@ -82,14 +82,15 @@ st.caption(f"{AIRCRAFT.n_rows} rows x {len(AIRCRAFT.seats)} seats, one aisle, 1 
            "Labels show each passenger's assigned seat.")
 
 if "sim" not in st.session_state:
-    st.session_state.strategy = next(iter(STRATEGIES))
+    st.session_state.strategy = "Random"
     st.session_state.seed = 0
     reset()
 
+STRATEGY_NAMES = ["Random"] + [name for name in STRATEGIES if name != "Random"]
 s1, s2 = st.columns([4, 1])
-s1.selectbox("Boarding strategy", list(STRATEGIES), key="strategy", on_change=reset)
+s1.selectbox("Boarding strategy", STRATEGY_NAMES, key="strategy", on_change=reset)
 s2.number_input("Seed", min_value=0, step=1, key="seed", on_change=reset,
-                disabled=not STRATEGIES[st.session_state.strategy].uses_randomness,
+                disabled=st.session_state.strategy != "Random",
                 help="The random order is drawn from a generator with this fixed seed, "
                      "so every run is reproducible.")
 sim: Simulation = st.session_state.sim

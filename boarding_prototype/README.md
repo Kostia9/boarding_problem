@@ -17,16 +17,15 @@ pytest                    # tests
 ```text
 boarding/
 ├── model.py         State, Passenger, Aircraft
-├── strategies.py    BoardingStrategy + FrontToBack, BackToFront, RandomOrder, RowCycling, OutsideIn
-├── timing.py        TimingModel + FixedTiming
+├── strategies.py    one function per strategy + STRATEGIES dict
 └── simulation.py    Simulation: step(), run()
 app.py               UI only, no model logic
 test_simulation.py
 ```
 
 ```python
-from boarding import Simulation, BackToFront
-Simulation(BackToFront(), seed=0).run()   # -> 367 (T in seconds)
+from boarding import Simulation, STRATEGIES
+Simulation(STRATEGIES["Back-to-front"], seed=0).run()   # -> 367 (T in seconds)
 ```
 
 ## Model
@@ -90,25 +89,21 @@ backwards through everyone behind them heading further back.
 
 ## Tests
 
-For every strategy: everyone ends in their seat; one passenger per aisle cell;
-no overtaking and at most one cell per step; same seed → same T. Plus: the known
-T values above, Outside-in order on a custom cabin, seat geometry helpers, a
-seat-interference timing model, another aircraft size, rejection of a strategy
-that loses a passenger.
+For every strategy: everyone ends in their seat; one passenger per aisle cell,
+no overtaking, at most one cell per step. Plus: same seed → same T, and the known
+T values above.
 
 ## Extending
 
-All randomness must come from `sim.rng` (a NumPy `Generator` seeded by
-`Simulation(seed=...)`), so every run is reproducible.
+All randomness must come from `sim.rng` (seeded by `Simulation(seed=...)`), so
+every run is reproducible.
 
 | To add | Do |
 |---|---|
-| Strategy | subclass `BoardingStrategy`, implement `order(passengers, rng)`, register in `STRATEGIES` |
-| Random or state-dependent times (e.g. seat interference) | subclass `TimingModel` |
-| Movement constraint | subclass `Simulation`, override `can_move(passenger, to_cell)` |
+| Strategy | write `order(passengers, rng) -> list`, add it to `STRATEGIES` |
+| Other fixed times | `Simulation(..., stow_time=..., seat_time=...)` |
+| Random or state-dependent times (e.g. seat interference) | subclass `Simulation`, override `time_at_row(passenger)` |
 | Cabin size | `Aircraft(n_rows=..., seats=...)` |
-| Monte Carlo | `[Simulation(s, timing=t, seed=k).run() for k in range(N)]` |
-
-Different walking speeds need changes in `Simulation.step`.
+| Monte Carlo | `[Simulation(strategy, seed=k).run() for k in range(N)]` |
 
 Next steps: stochastic times, Monte Carlo, seat interference.
