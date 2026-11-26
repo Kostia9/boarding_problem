@@ -20,7 +20,9 @@ class Passenger:
     aisle_distance: int            # 1 = aisle seat, 2 = middle, 3 = window
     current_position: int = 0      # 0 = outside, k = aisle cell of row k
     state: State = State.WAITING
-    finish_probability: float = 0.0  # chance per second of sitting down while STOWING
+    finish_probability: float = 0.0  # chance per second of finishing (a phase) while STOWING
+    phases_left: int = 0             # Erlang delay: phases still to finish
+    remaining_time: int = 0          # lognormal / fixed delay: seconds left at the row
 
     @property
     def seat_label(self) -> str:

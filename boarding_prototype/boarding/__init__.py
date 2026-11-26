@@ -4,6 +4,7 @@
     Simulation(STRATEGIES["Back-to-front"]).run()   # -> total boarding time T in seconds
 """
 
+from .delays import DELAYS, Erlang, Fixed, Geometric, LogNormal
 from .model import Aircraft, Passenger, State
 from .simulation import Simulation
 from .strategies import STRATEGIES

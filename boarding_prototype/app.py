@@ -9,7 +9,7 @@ import time
 import plotly.graph_objects as go
 import streamlit as st
 
-from boarding import STRATEGIES, Aircraft, Simulation, State
+from boarding import DELAYS, STRATEGIES, Aircraft, Simulation, State
 
 AIRCRAFT = Aircraft()
 STATE_COLORS = {State.WALKING: "#2a78d6", State.BLOCKED: "#eb6834",
@@ -18,16 +18,25 @@ EMPTY_COLOR = "#e1e0d9"
 
 
 @st.cache_data
-def boarding_times(seed: int, noncompliance: float) -> dict[str, int]:
-    """Total boarding time T of every strategy (reproducible for a given seed, so cached)."""
-    return {name: Simulation(strategy, AIRCRAFT, seed=seed, noncompliance=noncompliance).run()
+def boarding_times(seed: int, noncompliance: float, delay_name: str, phases: int,
+                   sigma: float) -> dict[str, int]:
+    """Total boarding time T of every strategy (reproducible for given settings, so cached)."""
+    delay = DELAYS[delay_name](phases=phases, sigma=sigma)
+    return {name: Simulation(strategy, AIRCRAFT, seed=seed, noncompliance=noncompliance,
+                             delay=delay).run()
             for name, strategy in STRATEGIES.items()}
+
+
+def current_delay():
+    return DELAYS[st.session_state.delay](phases=int(st.session_state.phases),
+                                          sigma=float(st.session_state.sigma))
 
 
 def reset():
     strategy = STRATEGIES[st.session_state.strategy]
     st.session_state.sim = Simulation(strategy, AIRCRAFT, seed=int(st.session_state.seed),
-                                      noncompliance=st.session_state.noncompliance)
+                                      noncompliance=st.session_state.noncompliance,
+                                      delay=current_delay())
     st.session_state.running = False
 
 
@@ -78,13 +87,16 @@ def draw_cabin(sim: Simulation) -> go.Figure:
 st.set_page_config(page_title="Airplane boarding prototype", layout="wide")
 st.title("Airplane boarding")
 st.caption(f"{AIRCRAFT.n_rows} rows x {len(AIRCRAFT.seats)} seats, one aisle, 1 step = 1 second. "
-           "At their row a passenger sits down with probability 1/7 per second (7 s on average). "
+           "At their row a passenger blocks the aisle for a random time, 7 s on average. "
            "Labels show each passenger's assigned seat.")
 
 if "sim" not in st.session_state:
     st.session_state.strategy = "Random"
     st.session_state.seed = 0
     st.session_state.noncompliance = 0.0
+    st.session_state.delay = "geometric"
+    st.session_state.phases = 3
+    st.session_state.sigma = 0.5
     reset()
 
 STRATEGY_NAMES = ["Random"] + [name for name in STRATEGIES if name != "Random"]
@@ -98,6 +110,14 @@ s3.number_input("Seed", min_value=0, step=1, key="seed", on_change=reset,
                 help="All randomness (the random order and the time each passenger needs "
                      "at their row) comes from a generator with this fixed seed, "
                      "so every run is reproducible.")
+d1, d2 = st.columns([3, 3])
+d1.selectbox("Time at the row (mean 7 s)", list(DELAYS), key="delay", on_change=reset,
+             help="geometric: memoryless, std ≈ mean; erlang: k geometric phases, less spread; "
+                  "lognormal: skewed with a few very slow passengers; fixed: always 7 s.")
+if st.session_state.delay == "erlang":
+    d2.number_input("Phases k", min_value=1, max_value=7, step=1, key="phases", on_change=reset)
+elif st.session_state.delay == "lognormal":
+    d2.number_input("Sigma", min_value=0.05, max_value=2.0, step=0.05, key="sigma", on_change=reset)
 sim: Simulation = st.session_state.sim
 finished = sim.finished
 if finished:
@@ -123,7 +143,9 @@ m5.metric("Total boarding time T", f"{sim.t} s" if finished else "-")
 st.plotly_chart(draw_cabin(sim), width="stretch", key="cabin", config={"displayModeBar": False})
 
 st.subheader("Strategy comparison")
-times = boarding_times(int(st.session_state.seed), st.session_state.noncompliance)
+times = boarding_times(int(st.session_state.seed), st.session_state.noncompliance,
+                       st.session_state.delay, int(st.session_state.phases),
+                       float(st.session_state.sigma))
 st.table({"Strategy": list(times), "Total boarding time T (s)": list(times.values())})
 st.caption(f"Every row is a single run with seed {st.session_state.seed}, not an average over many runs.")
 
