@@ -29,6 +29,24 @@ def outside_in(passengers, rng):
     return sorted(passengers, key=lambda p: (-p.aisle_distance, -p.target_row))
 
 
+def with_noncompliance(order, fraction, rng):
+    """Each passenger ignores the strategy with probability `fraction`.
+
+    Passengers who follow it keep their relative order; the others join the queue
+    at a uniformly random place. fraction = 0 leaves the order unchanged (and draws
+    no random numbers), fraction = 1 gives random boarding.
+    """
+    if isinstance(fraction, bool) or not 0 <= fraction <= 1:
+        raise ValueError(f"Expected a fraction between 0 and 1, got {fraction!r}")
+    if fraction == 0:
+        return list(order)
+    ignores = rng.random(len(order)) < fraction
+    queue = [p for p, ignored in zip(order, ignores) if not ignored]
+    for p in [p for p, ignored in zip(order, ignores) if ignored]:
+        queue.insert(int(rng.integers(len(queue) + 1)), p)
+    return queue
+
+
 # --- Zone policies ------------------------------------------------------------
 # Airlines call groups (zones) one after another; inside a zone the order is random.
 # This is the book's model of a policy (Bachmat, Def. 3.4.1): it fixes which zone a

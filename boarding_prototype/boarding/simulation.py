@@ -16,6 +16,7 @@ from numbers import Integral, Real
 import numpy as np
 
 from .model import Aircraft, State
+from .strategies import with_noncompliance
 
 
 def _mean_seconds(value):
@@ -33,15 +34,18 @@ def _seconds(value, minimum):
 class Simulation:
     """One boarding run. All randomness comes from `self.rng`, so a seed gives a reproducible run."""
 
-    def __init__(self, strategy, aircraft=Aircraft(), seed=0, stow_time=5, seat_time=2):
+    def __init__(self, strategy, aircraft=Aircraft(), seed=0, stow_time=5, seat_time=2,
+                 noncompliance=0.0):
         self.aircraft = aircraft
         self.stow_time = _seconds(stow_time, 0)
         self.seat_time = _seconds(seat_time, 0)
         self.rng = np.random.default_rng(seed)
         self.passengers = aircraft.make_passengers()
-        self.entry_order = list(strategy(self.passengers.copy(), self.rng))
-        if sorted(map(id, self.entry_order)) != sorted(map(id, self.passengers)):
+        self.noncompliance = noncompliance
+        order = list(strategy(self.passengers.copy(), self.rng))
+        if sorted(map(id, order)) != sorted(map(id, self.passengers)):
             raise ValueError("Strategy must return each original passenger exactly once")
+        self.entry_order = with_noncompliance(order, noncompliance, self.rng)
         self.queue = deque(self.entry_order)             # passengers still outside
         self.aisle = [None] * (aircraft.n_rows + 1)      # aisle[k] = passenger in cell k (0 unused)
         self.t = 0

@@ -18,15 +18,16 @@ EMPTY_COLOR = "#e1e0d9"
 
 
 @st.cache_data
-def boarding_times(seed: int) -> dict[str, int]:
+def boarding_times(seed: int, noncompliance: float) -> dict[str, int]:
     """Total boarding time T of every strategy (reproducible for a given seed, so cached)."""
-    return {name: Simulation(strategy, AIRCRAFT, seed=seed).run()
+    return {name: Simulation(strategy, AIRCRAFT, seed=seed, noncompliance=noncompliance).run()
             for name, strategy in STRATEGIES.items()}
 
 
 def reset():
     strategy = STRATEGIES[st.session_state.strategy]
-    st.session_state.sim = Simulation(strategy, AIRCRAFT, seed=int(st.session_state.seed))
+    st.session_state.sim = Simulation(strategy, AIRCRAFT, seed=int(st.session_state.seed),
+                                      noncompliance=st.session_state.noncompliance)
     st.session_state.running = False
 
 
@@ -83,12 +84,17 @@ st.caption(f"{AIRCRAFT.n_rows} rows x {len(AIRCRAFT.seats)} seats, one aisle, 1 
 if "sim" not in st.session_state:
     st.session_state.strategy = "Random"
     st.session_state.seed = 0
+    st.session_state.noncompliance = 0.0
     reset()
 
 STRATEGY_NAMES = ["Random"] + [name for name in STRATEGIES if name != "Random"]
-s1, s2 = st.columns([4, 1])
+s1, s2, s3 = st.columns([3, 2, 1])
 s1.selectbox("Boarding strategy", STRATEGY_NAMES, key="strategy", on_change=reset)
-s2.number_input("Seed", min_value=0, step=1, key="seed", on_change=reset,
+s2.slider("Passengers ignoring the strategy", 0.0, 1.0, step=0.05, key="noncompliance",
+          on_change=reset, format="%.2f",
+          help="Each passenger ignores the strategy with this probability and joins the queue "
+               "at a random place. 0 = everyone follows it, 1 = random boarding.")
+s3.number_input("Seed", min_value=0, step=1, key="seed", on_change=reset,
                 help="All randomness (the random order and the time each passenger needs "
                      "at their row) comes from a generator with this fixed seed, "
                      "so every run is reproducible.")
@@ -117,7 +123,7 @@ m5.metric("Total boarding time T", f"{sim.t} s" if finished else "-")
 st.plotly_chart(draw_cabin(sim), width="stretch", key="cabin", config={"displayModeBar": False})
 
 st.subheader("Strategy comparison")
-times = boarding_times(int(st.session_state.seed))
+times = boarding_times(int(st.session_state.seed), st.session_state.noncompliance)
 st.table({"Strategy": list(times), "Total boarding time T (s)": list(times.values())})
 st.caption(f"Every row is a single run with seed {st.session_state.seed}, not an average over many runs.")
 
