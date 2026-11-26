@@ -19,7 +19,7 @@ EMPTY_COLOR = "#e1e0d9"
 
 @st.cache_data
 def boarding_times(seed: int) -> dict[str, int]:
-    """Total boarding time T of every strategy (deterministic for a given seed, so cached)."""
+    """Total boarding time T of every strategy (reproducible for a given seed, so cached)."""
     return {name: Simulation(strategy, AIRCRAFT, seed=seed).run()
             for name, strategy in STRATEGIES.items()}
 
@@ -58,10 +58,8 @@ def draw_cabin(sim: Simulation) -> go.Figure:
             marker=dict(symbol="square" if seated else "circle", size=28, color=color),
             text=[p.seat_label for p in ps],
             textfont=dict(size=10, color="#0b0b0b" if seated else "#ffffff"),
-            customdata=[[state.value.lower(), p.remaining_time] for p in ps],
-            hovertemplate="Passenger %{text}: %{customdata[0]}"
-                          + (", %{customdata[1]} s left" if state is State.STOWING else "")
-                          + "<extra></extra>",
+            customdata=[state.value.lower() for p in ps],
+            hovertemplate="Passenger %{text}: %{customdata}<extra></extra>",
         ))
     half = max(map(abs, map(seat_y, aircraft.seats)))
     fig.update_layout(
@@ -79,6 +77,7 @@ def draw_cabin(sim: Simulation) -> go.Figure:
 st.set_page_config(page_title="Airplane boarding prototype", layout="wide")
 st.title("Airplane boarding")
 st.caption(f"{AIRCRAFT.n_rows} rows x {len(AIRCRAFT.seats)} seats, one aisle, 1 step = 1 second. "
+           "At their row a passenger sits down with probability 1/7 per second (7 s on average). "
            "Labels show each passenger's assigned seat.")
 
 if "sim" not in st.session_state:
@@ -90,8 +89,8 @@ STRATEGY_NAMES = ["Random"] + [name for name in STRATEGIES if name != "Random"]
 s1, s2 = st.columns([4, 1])
 s1.selectbox("Boarding strategy", STRATEGY_NAMES, key="strategy", on_change=reset)
 s2.number_input("Seed", min_value=0, step=1, key="seed", on_change=reset,
-                disabled=st.session_state.strategy != "Random",
-                help="The random order is drawn from a generator with this fixed seed, "
+                help="All randomness (the random order and the time each passenger needs "
+                     "at their row) comes from a generator with this fixed seed, "
                      "so every run is reproducible.")
 sim: Simulation = st.session_state.sim
 finished = sim.finished
@@ -120,8 +119,7 @@ st.plotly_chart(draw_cabin(sim), width="stretch", key="cabin", config={"displayM
 st.subheader("Strategy comparison")
 times = boarding_times(int(st.session_state.seed))
 st.table({"Strategy": list(times), "Total boarding time T (s)": list(times.values())})
-st.caption(f"Random is a single run with seed {st.session_state.seed} (one random order), "
-           "not an average over many runs.")
+st.caption(f"Every row is a single run with seed {st.session_state.seed}, not an average over many runs.")
 
 if st.session_state.running:
     time.sleep(1 / speed)

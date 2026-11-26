@@ -1,11 +1,27 @@
-"""Discrete-time boarding simulation, 1 step = 1 second."""
+"""Boarding as a discrete-time Markov chain, 1 step = 1 second.
+
+The state is: who is still outside (and in which order), who stands in which aisle
+cell and whether they are walking or stowing, and who is seated. Walking is
+deterministic (one cell per second when the next cell is free). A passenger at
+their row sits down in each second with probability p = 1 / (mean time at the row),
+independently of how long they have stood there. This time is geometric with mean
+1/p and memoryless, so the next state depends only on the current one: boarding is
+a Markov chain whose only absorbing state is "everyone seated", and the total
+boarding time T is its absorption time.
+"""
 
 from collections import deque
-from numbers import Integral
+from numbers import Integral, Real
 
 import numpy as np
 
 from .model import Aircraft, State
+
+
+def _mean_seconds(value):
+    if isinstance(value, bool) or not isinstance(value, Real) or not value >= 1:
+        raise ValueError(f"Expected a mean time at the row of at least 1 second, got {value!r}")
+    return float(value)
 
 
 def _seconds(value, minimum):
@@ -39,7 +55,7 @@ class Simulation:
         return sum(p.state is state for p in self.passengers)
 
     def time_at_row(self, passenger):
-        """Seconds a passenger blocks the aisle at their row. Override for e.g. seat interference."""
+        """Mean seconds a passenger blocks the aisle at their row. Override for e.g. seat interference."""
         return self.stow_time + self.seat_time
 
     def step(self):
@@ -56,8 +72,7 @@ class Simulation:
             if p is None:
                 continue
             if p.state is State.STOWING:
-                p.remaining_time -= 1
-                if p.remaining_time == 0:
+                if self.rng.random() < p.finish_probability:
                     p.state = State.SEATED
                     self.aisle[cell] = None
                     self.n_seated += 1
@@ -81,4 +96,4 @@ class Simulation:
         p.state = State.WALKING
         if cell == p.target_row:
             p.state = State.STOWING
-            p.remaining_time = _seconds(self.time_at_row(p), 1)
+            p.finish_probability = 1 / _mean_seconds(self.time_at_row(p))

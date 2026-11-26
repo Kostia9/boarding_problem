@@ -20,7 +20,7 @@ class Passenger:
     aisle_distance: int            # 1 = aisle seat, 2 = middle, 3 = window
     current_position: int = 0      # 0 = outside, k = aisle cell of row k
     state: State = State.WAITING
-    remaining_time: int = 0        # seconds left of stowing + sitting down
+    finish_probability: float = 0.0  # chance per second of sitting down while STOWING
 
     @property
     def seat_label(self) -> str:
