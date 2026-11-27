@@ -1,0 +1,163 @@
+# Airplane boarding
+
+Discrete-time simulation of boarding a single-aisle aircraft (default 10 rows × 6 seats,
+60 passengers) with a Streamlit + Plotly visualization. Cabin size, empty seats and
+random stow times are configurable. The sidebar also controls the fraction of passengers who ignore the strategy.
+
+## Run
+
+```bash
+uv venv .venv && source .venv/bin/activate
+uv pip install -r requirements.txt
+
+streamlit run app.py      # visualization
+python -m boarding        # cabin size study (mean T of every strategy, ~10 s)
+pytest                    # tests
+```
+
+```text
+boarding/
+├── model.py         State, Passenger, Aircraft
+├── strategies.py    one function per strategy + STRATEGIES dict
+└── simulation.py    Simulation: step(), run(); monte_carlo()
+app.py               UI only, no model logic
+test_simulation.py
+```
+
+```python
+from boarding import Aircraft, Simulation, STRATEGIES, monte_carlo
+Simulation(STRATEGIES["Back-to-front"], seed=0).run()   # -> 367 (T in seconds)
+
+# 20 × 4 cabin, 80% full, stow time ~ gamma(mean 5 s, sd 2 s); T of seeds 0..99
+monte_carlo(STRATEGIES["Random"], 100, aircraft=Aircraft(20, "ABCD"),
+            load_factor=0.8, stow_time=5, stow_sd=2, noncompliance=0.25).mean()
+```
+
+## Model
+
+1 step = 1 s. One passenger per aisle cell, no overtaking, walking 1 row/s.
+At their row a passenger blocks the aisle for 5 s (luggage) + 2 s (sitting).
+The next passenger enters when cell 1 is free. No seat interference.
+Values are assumptions, not measured data.
+
+- **Random stow time** (`stow_sd > 0`): each passenger's stow time is drawn from a gamma
+  distribution with mean `stow_time` and standard deviation `stow_sd` (right-skewed: a
+  few passengers take much longer), rounded to whole seconds, at least 1 s.
+- **Empty seats** (`load_factor < 1`): a random `round(load_factor · seats)` seats are taken.
+- Both are drawn before the strategy runs, so for a given seed every strategy boards the
+  same passengers with the same luggage (common random numbers → fair comparison).
+
+Each passenger independently ignores the strategy with probability `noncompliance` and
+joins a random queue position. Other passengers keep their relative order.
+
+Defaults (`stow_sd=0`, `load_factor=1`, `noncompliance=0`) give the deterministic model below.
+
+## Results
+
+Default cabin, fixed times:
+
+| Strategy | T |
+|---|---|
+| Front-to-back | 430 s |
+| Back-to-front | 367 s |
+| Outside-in (window → middle → aisle, back to front) | 259 s |
+| Random (seed 0; seeds 0–199: 186–242 s, mean 213 s) | 209 s |
+| Row-cycling (rows 10, 9, …, 1, 10, 9, …) | **97 s, optimal** |
+| Steffen (outside-in, rows two apart: 10A, 8A, …, 2A, 10F, …, 2F, 9A, …) | 137 s |
+
+Only passengers at different rows can stow in parallel, so T depends on how far
+consecutive passengers are spread over rows:
+
+- **Front-to-back** is fully serial: row 1 stows at the door and blocks entry: 60 × 7 + 10.
+- **Back-to-front** overlaps only at row boundaries.
+- **Outside-in** enters A and F of the same row back to back, so every second passenger waits.
+- **Steffen** spaces consecutive passengers two rows apart so that each has room to stow.
+  In this model a stowing passenger blocks only their own aisle cell, so the gap gains
+  nothing; it only halves the groups that stow in parallel (5 passengers instead of 10).
+- **Row-cycling**: each wave of 10 reaches all rows at t = 10 and sits at t = 17;
+  later waves take 16 s: T = 17 + 5 · 16 = 97.
+
+**Lower bound.** Each passenger enters cell 1 at a distinct second; a row-1 passenger
+holds it 7 s, others ≥ 1 s. If the last to enter is from row 1, they enter at
+≥ 1 + 5·7 + 54 = 90 and sit at ≥ 97; otherwise they enter at ≥ 96 and sit at ≥ 104.
+So T ≥ 97 for every order.
+
+### Cabin size
+
+`python -m boarding`: mean T (s) over 100 seeds, stow time gamma (mean 5 s, sd 2 s), full cabin.
+
+| rows × seats | Front-to-back | Back-to-front | Random | Row-cycling | Outside-in | Steffen |
+|---|---|---|---|---|---|---|
+| 10 × 2 | 150 | 87 | 82 | 37 | 87 | 53 |
+| 40 × 2 | 603 | 329 | 236 | 99 | 329 | 129 |
+| 10 × 4 | 291 | 227 | 149 | 72 | 173 | 101 |
+| 40 × 4 | 1163 | 888 | 420 | 194 | 655 | 237 |
+| 10 × 6 | 433 | 369 | 218 | 106 | 261 | 148 |
+| 40 × 6 | 1726 | 1450 | 615 | 288 | 981 | 345 |
+| 10 × 8 | 573 | 508 | 287 | 141 | 346 | 196 |
+| 40 × 8 | 2287 | 2013 | 799 | 382 | 1309 | 454 |
+
+(20 and 30 rows in the script output lie in between.)
+
+- **The ranking does not change** with size: Row-cycling < Steffen < Random < Outside-in ≤
+  Back-to-front < Front-to-back in every configuration.
+- **Front-to-back and Back-to-front scale linearly** with the number of passengers
+  (≈ 7 s each): they are serial, so a bigger cabin adds no parallelism.
+- **Random, Row-cycling and Steffen scale sub-linearly with rows**: more rows means more passengers
+  can stow at the same time. Best T per passenger drops from ≈ 1.8 s (10 rows) to ≈ 1.2 s
+  (40 rows), almost independent of seats per row.
+- **Back-to-front gains little over Front-to-back in wide cabins** (1.7× faster with 2
+  seats, 1.1× with 8): more passengers per row means longer serial blocks.
+- With 2 seats per row both seats are aisle seats, so Outside-in = Back-to-front.
+
+## Mathematical description
+
+Deterministic system $X(t+1) = F(X(t))$ with state
+
+$$X(t) = \big(p_i(t),\ s_i(t),\ \tau_i(t)\big)_{i=1}^{60},$$
+
+where $p_i \in \{0,\dots,10\}$ is the position (0 = outside), $s_i$ the state
+(WAITING, WALKING, BLOCKED, STOWING, SEATED), $\tau_i$ the remaining stow time.
+The boarding order $\pi$ is a parameter of $F$.
+
+**Initial state:** $p_i = 0$, $s_i = \text{WAITING}$, $\tau_i = 0$.
+
+**Transition $F$:** cells $k = 10, \dots, 1$ (back to front), then the door:
+
+1. STOWING: $\tau_i \leftarrow \tau_i - 1$; at 0 → SEATED, cell freed.
+2. Cell $k+1$ free → move, WALKING; if $p_i = r_i$ → STOWING, $\tau_i = 7$.
+3. Cell $k+1$ occupied → BLOCKED.
+4. Cell 1 free → next passenger in $\pi$ enters.
+
+Back-to-front processing lets a line advance together in one step and makes $F$
+independent of iteration order.
+
+**Termination:** $T = \min\{t : s_i(t) = \text{SEATED}\ \forall i\}$. Always finite:
+the passenger furthest down the aisle is never blocked.
+
+**Blocking:** a STOWING passenger holds their cell for 7 s, and the stop propagates
+backwards through everyone behind them heading further back.
+
+## Tests
+
+For every strategy, in the default cabin, with random stow times + empty seats, and in a
+15 × 4 cabin: everyone ends in their seat; one passenger per aisle cell, no overtaking, at
+most one cell per step. Plus: same seed → same T, the known T values above, stow time
+distribution, same passengers for every strategy, empty seats, input validation.
+
+## Extending
+
+All randomness must come from `sim.rng` (seeded by `Simulation(seed=...)`), so
+every run is reproducible.
+
+| To add | Do |
+|---|---|
+| Strategy | write `order(passengers, rng) -> list`, add it to `STRATEGIES` |
+| Other fixed times | `Simulation(..., stow_time=..., seat_time=...)` |
+| Random stow time | `Simulation(..., stow_time=mean, stow_sd=sd)` |
+| Empty seats | `Simulation(..., load_factor=0.8)` |
+| Other time models (e.g. seat interference) | subclass `Simulation`, override `time_at_row(passenger)` |
+| Cabin size | `Aircraft(n_rows=..., seats=...)` |
+| Monte Carlo | `monte_carlo(strategy, N, **simulation_kwargs)` |
+
+Next steps: seat interference.
