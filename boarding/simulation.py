@@ -18,21 +18,28 @@ def _seconds(value, minimum):
 class Simulation:
     """One boarding run. All randomness comes from `self.rng`, so a seed gives a reproducible run.
 
-    stow_sd > 0 draws each passenger's stow time from a gamma distribution with mean
-    `stow_time` and standard deviation `stow_sd`, rounded to whole seconds (at least 1).
+    Each passenger gets a geometric stow time with mean
+    `stow_time` seconds, followed by the fixed sitting time.
     load_factor < 1 leaves a random share of the seats empty.
     Empty seats and stow times are drawn before the strategy runs, so for a given seed
     every strategy boards the same passengers with the same luggage.
     """
 
     def __init__(self, strategy, aircraft=Aircraft(), seed=0, stow_time=5, seat_time=2,
-                 stow_sd=0, load_factor=1, noncompliance=0):
+                 *, load_factor=1, noncompliance=0, block_probability=0):
         self.aircraft = aircraft
-        self.stow_time = _seconds(stow_time, 0)
+        self.stow_time = _seconds(stow_time, 1)
         self.seat_time = _seconds(seat_time, 0)
         self.rng = np.random.default_rng(seed)
         self.passengers = self._fill_seats(load_factor)
-        self._draw_stow_times(stow_sd)
+        self._draw_stow_times()
+        if not 0 <= block_probability <= 1:
+            raise ValueError("block_probability must be between 0 and 1")
+        if block_probability:
+            # Sample blockers independently of the strategy and queue order.
+            block_rng = np.random.Generator(self.rng.bit_generator.jumped())
+            for passenger in self.passengers:
+                passenger.blocks_behind = block_rng.random() < block_probability
         order = list(strategy(self.passengers.copy(), self.rng))
         if sorted(map(id, order)) != sorted(map(id, self.passengers)):
             raise ValueError("Strategy must return each original passenger exactly once")
@@ -72,11 +79,11 @@ class Simulation:
                     p.state = State.SEATED
                     self.aisle[cell] = None
                     self.n_seated += 1
-            elif self.aisle[cell + 1] is None:
+            elif self._can_enter(cell + 1):
                 self._move(p, cell + 1)
             else:
                 p.state = State.BLOCKED
-        if self.queue and self.aisle[1] is None:
+        if self.queue and self._can_enter(1):
             self._move(self.queue.popleft(), 1)
 
     def run(self):
@@ -97,18 +104,17 @@ class Simulation:
         keep = np.sort(self.rng.choice(len(passengers), size=n, replace=False))
         return [passengers[i] for i in keep]
 
-    def _draw_stow_times(self, stow_sd):
-        if not stow_sd >= 0:
-            raise ValueError(f"stow_sd must be at least 0, got {stow_sd!r}")
-        if stow_sd == 0:
-            times = [self.stow_time] * len(self.passengers)
-        elif self.stow_time == 0:
-            raise ValueError("A random stow time needs a mean stow_time of at least 1 s")
-        else:
-            shape, scale = (self.stow_time / stow_sd) ** 2, stow_sd ** 2 / self.stow_time
-            times = np.maximum(1, np.rint(self.rng.gamma(shape, scale, len(self.passengers))))
+    def _draw_stow_times(self):
+        times = self.rng.geometric(1 / self.stow_time, size=len(self.passengers))
         for p, t in zip(self.passengers, times):
             p.stow_time = int(t)
+
+    def _can_enter(self, cell):
+        if self.aisle[cell] is not None:
+            return False
+        ahead = self.aisle[cell + 1] if cell < self.aircraft.n_rows else None
+        return not (ahead and ahead.blocks_behind and ahead.state is State.STOWING
+                    and ahead.remaining_time > self.seat_time)
 
     def _move(self, p, cell):
         self.aisle[p.current_position] = None

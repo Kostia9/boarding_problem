@@ -23,6 +23,7 @@ class Passenger:
     current_position: int = 0      # 0 = outside, k = aisle cell of row k
     state: State = State.WAITING
     remaining_time: int = 0        # seconds left of stowing + sitting down
+    blocks_behind: bool = False
 
     @property
     def seat_label(self) -> str:

@@ -15,26 +15,26 @@ from boarding import STRATEGIES, Aircraft, Simulation, State, monte_carlo
 
 SEAT_LETTERS = "ABCDEFGH"
 DEFAULTS = dict(strategy="Random", seed=0, n_rows=10, n_seats=6, load_factor=1.0,
-                stow_time=5, stow_sd=0.0, noncompliance=0.0, n_runs=100)
+                stow_time=5, noncompliance=0.0, block_probability=0.0, n_runs=100)
 STATE_COLORS = {State.WAITING: "#7d7c74", State.WALKING: "#2a78d6", State.BLOCKED: "#eb6834",
                 State.STOWING: "#1baf7a", State.SEATED: "#eda100"}
 EMPTY_COLOR = "#e1e0d9"
 MAX_FRAMES = 400  # longer runs show every k-th second so the figure stays small
-PLAYBACK_SPEEDS = (1, 5, 10, 30)  # simulated seconds per real second, one play button each
+PLAYBACK_SPEEDS = (1, 3, 5, 10, 30)  # simulated seconds per real second, one play button each
 
 
-def settings(n_rows, n_seats, load_factor, stow_time, stow_sd, noncompliance) -> dict:
+def settings(n_rows, n_seats, load_factor, stow_time, noncompliance, block_probability) -> dict:
     """Simulation keyword arguments for the chosen cabin and stow time."""
     return dict(aircraft=Aircraft(n_rows, SEAT_LETTERS[:n_seats]), load_factor=load_factor,
-                stow_time=stow_time, stow_sd=stow_sd, noncompliance=noncompliance)
+                stow_time=stow_time, noncompliance=noncompliance, block_probability=block_probability)
 
 
 @st.cache_data
-def boarding_times(n_runs: int, *args) -> dict[str, list[float]]:
+def boarding_times(n_runs: int, **config) -> dict[str, list[float]]:
     """Mean, min and max of T over seeds 0..n_runs-1 for every strategy (deterministic, so cached)."""
     result = {}
     for name, strategy in STRATEGIES.items():
-        times = monte_carlo(strategy, n_runs, **settings(*args))
+        times = monte_carlo(strategy, n_runs, **settings(**config))
         result[name] = [round(times.mean(), 1), times.min(), times.max()]
     return result
 
@@ -105,7 +105,7 @@ def draw_cabin(aircraft: Aircraft, passengers: list, frames: list) -> dict:
     fig.add_trace(go.Scatter(
         x=[r for r, _ in empty] or [None], y=[seat_y(s) for _, s in empty] or [None],
         mode="markers", name="Empty seat", hoverinfo="skip", showlegend=bool(empty),
-        marker=dict(symbol="x-thin", size=size // 2, line=dict(width=2, color="#c3c2b7")),
+        marker=dict(symbol="x", size=round(size * 0.6), color="#222222"),
     ))
     # Animated traces (index 3 and 4): waiting count at the door, and every passenger.
     fig.add_trace(go.Scatter(
@@ -171,10 +171,10 @@ with st.sidebar:
     st.select_slider("Seats per row", [2, 4, 6, 8], key="n_seats")
     st.slider("Load factor (share of seats taken)", 0.1, 1.0, step=0.05, key="load_factor")
     st.header("Stow time")
-    st.slider("Mean (s)", 1, 15, key="stow_time")
-    st.slider("Standard deviation (s)", 0.0, 5.0, step=0.5, key="stow_sd",
-              help="0 = every passenger needs exactly the mean. Otherwise each passenger's stow "
-                   "time is drawn from a gamma distribution, rounded to whole seconds (at least 1).")
+    st.slider("Mean geometric stow time (s)", 1, 15, key="stow_time",
+              help="Each second, a passenger finishes stowing with probability 1 / mean.")
+    st.slider("Chance of blocking the row behind while stowing", 0.0, 1.0, step=0.05,
+              key="block_probability", help="0 = never, 1 = every passenger.")
     st.header("Strategy comparison")
     st.slider("Passengers ignoring the strategy", 0.0, 1.0, step=0.05, key="noncompliance",
               help="Each passenger independently joins a random queue position with this probability.")
@@ -194,12 +194,13 @@ s2.number_input("Seed", min_value=0, step=1, key="seed",
                      "with this fixed seed, so every run is reproducible.")
 
 run = record_run(ss.strategy, int(ss.seed), ss.n_rows, ss.n_seats, ss.load_factor, ss.stow_time,
-                 ss.stow_sd, ss.noncompliance)
+                 ss.noncompliance, ss.block_probability)
 st.plotly_chart(draw_cabin(*run), width="stretch", key="cabin",
                 config={"displayModeBar": False})
 
 st.subheader("Strategy comparison")
-times = boarding_times(ss.n_runs, ss.n_rows, ss.n_seats, ss.load_factor, ss.stow_time, ss.stow_sd, ss.noncompliance)
+config = {key: ss[key] for key in ("n_rows", "n_seats", "load_factor", "stow_time", "noncompliance", "block_probability")}
+times = boarding_times(ss.n_runs, **config)
 table = pd.DataFrame([[name, *t] for name, t in times.items()],
                      columns=["Strategy", "Mean T (s)", "Min T (s)", "Max T (s)"])
 table = table.sort_values("Mean T (s)").reset_index(drop=True)  # st.table hides only a plain 0..n index

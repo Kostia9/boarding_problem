@@ -9,8 +9,8 @@ from boarding import Aircraft, STRATEGIES, Simulation, State, monte_carlo
 
 IN_AISLE = (State.WALKING, State.BLOCKED, State.STOWING)
 CONFIGS = {"default": {},
-           "random stow, 70% full": dict(stow_sd=3, load_factor=0.7, seed=3),
-           "15 x 4 cabin": dict(aircraft=Aircraft(15, "ABCD"), stow_sd=2)}
+           "random stow, 70% full": dict(load_factor=0.7, seed=3),
+           "15 x 4 cabin": dict(aircraft=Aircraft(15, "ABCD"))}
 
 
 def steps(sim):
@@ -54,8 +54,8 @@ def test_same_seed_same_result():
 
 def test_known_boarding_times():
     times = {name: Simulation(strategy).run() for name, strategy in STRATEGIES.items()}
-    assert times == {"Front-to-back": 430, "Back-to-front": 367, "Random": 209,
-                     "Row-cycling": 97, "Outside-in": 259, "Steffen": 137}
+    assert times == {"Front-to-back": 453, "Back-to-front": 404, "Random": 266,
+                     "Row-cycling": 142, "Outside-in": 287, "Steffen": 196}
 
 
 @pytest.mark.parametrize("order", [lambda ps: ps[:-1], lambda ps: [ps[0]] * len(ps),
@@ -75,8 +75,8 @@ def test_in_place_strategy():
     assert [p.id for p in sim.entry_order] == [1, 0]
 
 
-@pytest.mark.parametrize("stow, seat", [(1.5, 0), (0, 0), (-1, 2)])
-def test_invalid_fixed_times(stow, seat):
+@pytest.mark.parametrize("stow, seat", [(1.5, 0), (0, 2), (-1, 2), (5, -1)])
+def test_invalid_times(stow, seat):
     with pytest.raises(ValueError):
         Simulation(STRATEGIES["Front-to-back"], Aircraft(1, "A"),
                    stow_time=stow, seat_time=seat).step()
@@ -94,7 +94,7 @@ def test_custom_time_must_be_whole():
 def test_numpy_times():
     sim = Simulation(STRATEGIES["Front-to-back"], Aircraft(1, "A"),
                      stow_time=np.uint8(200), seat_time=np.uint8(100))
-    assert sim.run() == 301
+    assert sim.run() == 1 + int(np.random.default_rng(0).geometric(1 / 200)) + 100
 
 
 def test_row_cycling_uses_cabin_order():
@@ -104,15 +104,15 @@ def test_row_cycling_uses_cabin_order():
 
 
 def test_random_stow_times():
-    sim = Simulation(STRATEGIES["Front-to-back"], Aircraft(100, "ABCDEF"), stow_time=5, stow_sd=2)
+    sim = Simulation(STRATEGIES["Front-to-back"], Aircraft(100, "ABCDEF"), stow_time=5)
     times = np.array([p.stow_time for p in sim.passengers])
     assert times.min() >= 1 and len(set(times)) > 1
-    assert abs(times.mean() - 5) < 0.2 and abs(times.std() - 2) < 0.2
+    np.testing.assert_array_equal(times, np.random.default_rng(0).geometric(0.2, size=len(times)))
 
 
 def test_same_seed_same_passengers_for_every_strategy():
     def passengers(name):
-        sim = Simulation(STRATEGIES[name], seed=5, stow_sd=2, load_factor=0.8)
+        sim = Simulation(STRATEGIES[name], seed=5, load_factor=0.8)
         return [(p.id, p.stow_time) for p in sim.passengers]
 
     assert all(passengers(name) == passengers("Random") for name in STRATEGIES)
@@ -131,12 +131,6 @@ def test_invalid_load_factor(load_factor):
         Simulation(STRATEGIES["Random"], load_factor=load_factor)
 
 
-@pytest.mark.parametrize("stow, sd", [(5, -1), (0, 2)])
-def test_invalid_random_stow(stow, sd):
-    with pytest.raises(ValueError):
-        Simulation(STRATEGIES["Random"], stow_time=stow, stow_sd=sd)
-
-
 def test_row_cycling_with_empty_seats():
     sim = Simulation(STRATEGIES["Row-cycling"], load_factor=0.6)
     keys = [(p.seat_index, -p.target_row) for p in sim.entry_order]
@@ -144,9 +138,9 @@ def test_row_cycling_with_empty_seats():
 
 
 def test_monte_carlo():
-    times = monte_carlo(STRATEGIES["Random"], 5, stow_sd=2)
+    times = monte_carlo(STRATEGIES["Random"], 5)
     assert len(times) == 5 and len(set(times)) > 1
-    assert list(times) == list(monte_carlo(STRATEGIES["Random"], 5, stow_sd=2))
+    assert list(times) == list(monte_carlo(STRATEGIES["Random"], 5))
 
 
 def test_steffen_order():
@@ -158,7 +152,7 @@ def test_steffen_order():
 @pytest.mark.parametrize("fraction", [0, 0.5, 1])
 def test_noncompliance_changes_only_queue_order(fraction):
     strategy = STRATEGIES["Steffen"]
-    settings = dict(seed=42, load_factor=0.75, stow_sd=2)
+    settings = dict(seed=42, load_factor=0.75)
     baseline = Simulation(strategy, **settings)
     sim = Simulation(strategy, noncompliance=fraction, **settings)
     assert [(p.seat_label, p.stow_time) for p in sim.passengers] == [
@@ -174,3 +168,26 @@ def test_noncompliance_changes_only_queue_order(fraction):
 def test_invalid_noncompliance(fraction):
     with pytest.raises(ValueError):
         Simulation(STRATEGIES["Random"], noncompliance=fraction)
+
+
+@pytest.mark.parametrize("row", [2, 3])
+def test_row_behind_reopens_when_stowing_ends(row):
+    sim = Simulation(STRATEGIES["Back-to-front"], Aircraft(row, "A"),
+                     stow_time=1, seat_time=2, block_probability=1)
+    for _ in range(row):
+        sim.step()
+    assert sim.aisle[row].state is State.STOWING
+    assert sim.aisle[row - 1] is None
+    sim.step()
+    assert sim.aisle[row].remaining_time == 2
+    assert sim.aisle[row - 1] is not None
+    assert sim.run() > row
+
+
+def test_blocking_probability_preserves_seeded_flight():
+    settings = dict(seed=7, load_factor=0.8, noncompliance=0.25)
+    baseline = Simulation(STRATEGIES["Random"], **settings)
+    sim = Simulation(STRATEGIES["Random"], **settings, block_probability=0.5)
+    assert [(p.id, p.stow_time) for p in sim.entry_order] == [
+        (p.id, p.stow_time) for p in baseline.entry_order]
+    assert 0 < sum(p.blocks_behind for p in sim.passengers) < len(sim.passengers)
